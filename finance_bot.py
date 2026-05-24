@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""
-Telegram Finance Tracker Bot
-Tracks expenses by category and provides statistics
-"""
-
 import json
 import os
 import logging
 from datetime import datetime
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -18,20 +13,13 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Bot token
-TOKEN = "8819550333:AAEjfwcwbD8RT-kMt1SxcHW4ioeaIfoBGAM"
+TOKEN = os.environ.get("TOKEN", "")
 
-# Conversation states
-AMOUNT, CATEGORY = range(2)
+AMOUNT, CATEGORY, SUBCATEGORY = range(3)
 
-# Categories
 CATEGORIES = [
     "🚌 Транспорт",
     "🚕 Такси",
@@ -45,37 +33,21 @@ CATEGORIES = [
     "📦 Другое",
 ]
 
-# Data file
 DATA_FILE = "finance_data.json"
 
 
-def load_data():
-    """Load expense data from file."""
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-
-def save_data(data):
-    """Save expense data to file."""
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def get_user_data(data, user_id):
-    """Get or create user data."""
-    uid = str(user_id)
-    if uid not in data:
-        data[uid] = {"expenses": []}
-    return data[uid]
+def main_keyboard():
+    keyboard = [
+        [KeyboardButton("💰 Внести сумму")],
+        [KeyboardButton("📊 Статистика"), KeyboardButton("🗑️ Сбросить данные")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 
 def category_keyboard():
-    """Build category keyboard."""
     keyboard = []
     row = []
-    for i, cat in enumerate(CATEGORIES):
+    for cat in CATEGORIES:
         row.append(cat)
         if len(row) == 2:
             keyboard.append(row)
@@ -85,135 +57,37 @@ def category_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
 
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def get_user_data(data, user_id):
+    uid = str(user_id)
+    if uid not in data:
+        data[uid] = {"expenses": []}
+    return data[uid]
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start conversation — ask for amount."""
     user = update.effective_user
     await update.message.reply_text(
         f"👋 Привет, {user.first_name}!\n\n"
-        "💰 Я помогу тебе отслеживать расходы.\n\n"
-        "Введи сумму, которую ты потратил(а):",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    return AMOUNT
-
-
-async def get_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive amount and ask for category."""
-    text = update.message.text.strip().replace(",", ".")
-
-    try:
-        amount = float(text)
-        if amount <= 0:
-            raise ValueError("Amount must be positive")
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Пожалуйста, введи корректную сумму (например: 250 или 1500.50):"
-        )
-        return AMOUNT
-
-    context.user_data["amount"] = amount
-    await update.message.reply_text(
-        f"✅ Сумма: *{amount:,.2f} ₽*\n\nВыбери категорию расхода:",
-        parse_mode="Markdown",
-        reply_markup=category_keyboard(),
-    )
-    return CATEGORY
-
-
-async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive category and save expense."""
-    category = update.message.text.strip()
-
-    if category not in CATEGORIES:
-        await update.message.reply_text(
-            "❌ Пожалуйста, выбери категорию из списка ниже:",
-            reply_markup=category_keyboard(),
-        )
-        return CATEGORY
-
-    amount = context.user_data.get("amount", 0)
-    user_id = update.effective_user.id
-
-    # Save to file
-    data = load_data()
-    user_data = get_user_data(data, user_id)
-    user_data["expenses"].append({
-        "amount": amount,
-        "category": category,
-        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    })
-    save_data(data)
-
-    await update.message.reply_text(
-        f"✅ Записано!\n\n"
-        f"💸 Сумма: *{amount:,.2f} ₽*\n"
-        f"📂 Категория: {category}\n\n"
-        f"Введи следующую сумму или используй команды:\n"
-        f"/stats — статистика\n"
-        f"/reset — сбросить данные\n"
-        f"/add — добавить новый расход",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardRemove(),
+        "💰 Я помогу отслеживать твои расходы.\n\n"
+        "Используй кнопки внизу экрана для управления ботом:",
+        reply_markup=main_keyboard(),
     )
     return ConversationHandler.END
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show expense statistics."""
-    user_id = update.effective_user.id
-    data = load_data()
-    user_data = get_user_data(data, user_id)
-    expenses = user_data.get("expenses", [])
-
-    if not expenses:
-        await update.message.reply_text(
-            "📊 У тебя пока нет записанных расходов.\n\nИспользуй /start или /add чтобы добавить расход."
-        )
-        return
-
-    # Calculate totals by category
-    totals = {}
-    grand_total = 0
-    for exp in expenses:
-        cat = exp["category"]
-        amt = exp["amount"]
-        totals[cat] = totals.get(cat, 0) + amt
-        grand_total += amt
-
-    # Sort by amount descending
-    sorted_totals = sorted(totals.items(), key=lambda x: x[1], reverse=True)
-
-    lines = ["📊 *Твоя статистика расходов:*\n"]
-    for cat, amt in sorted_totals:
-        pct = (amt / grand_total * 100) if grand_total > 0 else 0
-        bar = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
-        lines.append(f"{cat}\n`{bar}` {pct:.1f}%\n💰 {amt:,.2f} ₽\n")
-
-    lines.append(f"━━━━━━━━━━━━━━━━")
-    lines.append(f"💳 *Итого: {grand_total:,.2f} ₽*")
-    lines.append(f"📝 Всего записей: {len(expenses)}")
-
-    await update.message.reply_text(
-        "\n".join(lines),
-        parse_mode="Markdown",
-    )
-
-
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reset all user data."""
-    user_id = update.effective_user.id
-    data = load_data()
-    uid = str(user_id)
-    if uid in data:
-        data[uid] = {"expenses": []}
-        save_data(data)
-    await update.message.reply_text(
-        "🗑️ Все данные удалены.\n\nИспользуй /start или /add чтобы начать заново."
-    )
-
-
-async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start adding a new expense."""
+async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "💰 Введи сумму, которую ты потратил(а):",
         reply_markup=ReplyKeyboardRemove(),
@@ -221,40 +95,170 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return AMOUNT
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel current operation."""
+async def get_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip().replace(",", ".")
+    try:
+        amount = float(text)
+        if amount <= 0:
+            raise ValueError()
+    except ValueError:
+        await update.message.reply_text("❌ Введи корректную сумму (например: 250 или 1500.50):")
+        return AMOUNT
+
+    context.user_data["amount"] = amount
     await update.message.reply_text(
-        "❌ Отменено.\n\nИспользуй /start или /add чтобы добавить расход.",
-        reply_markup=ReplyKeyboardRemove(),
+        f"✅ Сумма: *{amount:,.2f} ₽*\n\nВыбери категорию:",
+        parse_mode="Markdown",
+        reply_markup=category_keyboard(),
+    )
+    return CATEGORY
+
+
+async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    category = update.message.text.strip()
+    if category not in CATEGORIES:
+        await update.message.reply_text("❌ Выбери категорию из списка:", reply_markup=category_keyboard())
+        return CATEGORY
+
+    context.user_data["category"] = category
+
+    if category == "📦 Другое":
+        await update.message.reply_text(
+            "✏️ Напиши на что именно потрачено?\n\nНапример: *книга*, *подарок*, *ремонт*",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return SUBCATEGORY
+
+    return await save_expense(update, context, subcategory=None)
+
+
+async def get_subcategory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    subcategory = update.message.text.strip().lower()
+    if not subcategory:
+        await update.message.reply_text("❌ Напиши название подкатегории:")
+        return SUBCATEGORY
+    return await save_expense(update, context, subcategory=subcategory)
+
+
+async def save_expense(update: Update, context: ContextTypes.DEFAULT_TYPE, subcategory) -> int:
+    amount = context.user_data.get("amount", 0)
+    category = context.user_data.get("category", "")
+    user_id = update.effective_user.id
+
+    data = load_data()
+    user_data = get_user_data(data, user_id)
+    user_data["expenses"].append({
+        "amount": amount,
+        "category": category,
+        "subcategory": subcategory,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    })
+    save_data(data)
+
+    sub_text = f"\n📝 Подкатегория: *{subcategory}*" if subcategory else ""
+    await update.message.reply_text(
+        f"✅ Записано!\n\n💸 Сумма: *{amount:,.2f} ₽*\n📂 Категория: {category}{sub_text}",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
     )
     return ConversationHandler.END
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show help."""
-    await update.message.reply_text(
-        "ℹ️ *Помощь по боту:*\n\n"
-        "/start или /add — добавить расход\n"
-        "/stats — посмотреть статистику\n"
-        "/reset — сбросить все данные\n"
-        "/cancel — отменить текущее действие\n\n"
-        "*Категории расходов:*\n" + "\n".join(CATEGORIES),
-        parse_mode="Markdown",
-    )
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    data = load_data()
+    user_data = get_user_data(data, user_id)
+    expenses = user_data.get("expenses", [])
+
+    if not expenses:
+        await update.message.reply_text(
+            "📊 Нет расходов. Нажми *💰 Внести сумму* чтобы добавить.",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(),
+        )
+        return
+
+    totals = {}
+    subcategory_totals = {}
+    grand_total = 0
+
+    for exp in expenses:
+        cat = exp["category"]
+        amt = exp["amount"]
+        sub = exp.get("subcategory")
+        totals[cat] = totals.get(cat, 0) + amt
+        grand_total += amt
+
+        if sub and cat == "📦 Другое":
+            if cat not in subcategory_totals:
+                subcategory_totals[cat] = {}
+            subcategory_totals[cat][sub] = subcategory_totals[cat].get(sub, 0) + amt
+
+    sorted_totals = sorted(totals.items(), key=lambda x: x[1], reverse=True)
+    lines = ["📊 *Статистика расходов:*\n"]
+
+    for cat, amt in sorted_totals:
+        pct = (amt / grand_total * 100) if grand_total > 0 else 0
+        bar = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
+        lines.append(f"{cat}\n`{bar}` {pct:.1f}%\n💰 {amt:,.2f} ₽")
+
+        if cat in subcategory_totals:
+            subs = sorted(subcategory_totals[cat].items(), key=lambda x: x[1], reverse=True)
+            for sub_name, sub_amt in subs:
+                lines.append(f"  └ {sub_name}: {sub_amt:,.2f} ₽")
+        lines.append("")
+
+    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append(f"💳 *Итого: {grand_total:,.2f} ₽*")
+    lines.append(f"📝 Записей: {len(expenses)}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=main_keyboard())
+
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    data = load_data()
+    uid = str(user_id)
+    if uid in data:
+        data[uid] = {"expenses": []}
+        save_data(data)
+    await update.message.reply_text("🗑️ Все данные удалены.", reply_markup=main_keyboard())
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("❌ Отменено.", reply_markup=main_keyboard())
+    return ConversationHandler.END
+
+
+async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    if text == "💰 Внести сумму":
+        return await ask_amount(update, context)
+    elif text == "📊 Статистика":
+        await stats(update, context)
+        return ConversationHandler.END
+    elif text == "🗑️ Сбросить данные":
+        await reset(update, context)
+        return ConversationHandler.END
+    return ConversationHandler.END
 
 
 def main():
-    """Run the bot."""
+    if not TOKEN:
+        raise ValueError("TOKEN не найден!")
+
     app = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
-            CommandHandler("add", add),
+            MessageHandler(filters.Regex("^(💰 Внести сумму|📊 Статистика|🗑️ Сбросить данные)$"), handle_menu),
         ],
         states={
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
             CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_category)],
+            SUBCATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_subcategory)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
@@ -262,9 +266,8 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(CommandHandler("help", help_command))
 
-    print("🤖 Бот запущен! Нажми Ctrl+C для остановки.")
+    print("🤖 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
