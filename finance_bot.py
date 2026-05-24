@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v2.0
+# v3.0
 import json
 import os
 import logging
@@ -18,6 +18,7 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TOKEN", "")
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "financereciepe_bot")
 
 AMOUNT, CATEGORY, SUBCATEGORY = range(3)
 
@@ -34,6 +35,7 @@ CATEGORIES = [
     "📦 Другое",
 ]
 
+REFERRAL_BONUS = 100.0
 DATA_FILE = "finance_data.json"
 
 
@@ -41,6 +43,7 @@ def main_keyboard():
     keyboard = [
         [KeyboardButton("💰 Внести сумму")],
         [KeyboardButton("📊 Статистика"), KeyboardButton("🗑️ Сбросить данные")],
+        [KeyboardButton("👥 Пригласить друга")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -73,16 +76,72 @@ def save_data(data):
 def get_user_data(data, user_id):
     uid = str(user_id)
     if uid not in data:
-        data[uid] = {"expenses": []}
+        data[uid] = {
+            "expenses": [],
+            "bonus": 0.0,
+            "referrals": [],
+            "referred_by": None,
+        }
+    if "bonus" not in data[uid]:
+        data[uid]["bonus"] = 0.0
+    if "referrals" not in data[uid]:
+        data[uid]["referrals"] = []
+    if "referred_by" not in data[uid]:
+        data[uid]["referred_by"] = None
     return data[uid]
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
-    await update.message.reply_text(
+    user_id = user.id
+
+    data = load_data()
+    user_data = get_user_data(data, user_id)
+
+    referred_by = None
+    if context.args:
+        try:
+            referred_by = int(context.args[0])
+        except ValueError:
+            referred_by = None
+
+    welcome_text = (
         f"👋 Привет, {user.first_name}!\n\n"
         "💰 Я помогу отслеживать твои расходы.\n\n"
-        "Используй кнопки внизу экрана для управления ботом:",
+        "Используй кнопки внизу экрана:"
+    )
+
+    if referred_by and referred_by != user_id and user_data["referred_by"] is None:
+        user_data["referred_by"] = referred_by
+        save_data(data)
+
+        data = load_data()
+        referrer_data = get_user_data(data, referred_by)
+        if str(user_id) not in referrer_data["referrals"]:
+            referrer_data["referrals"].append(str(user_id))
+            referrer_data["bonus"] = referrer_data.get("bonus", 0.0) + REFERRAL_BONUS
+            save_data(data)
+
+            try:
+                await context.bot.send_message(
+                    chat_id=referred_by,
+                    text=f"🎉 По твоей ссылке зарегистрировался новый пользователь!\n\n"
+                         f"💰 Тебе начислено *+{REFERRAL_BONUS:.0f} бонусных ₽*\n\n"
+                         f"Всего приглашено: {len(referrer_data['referrals'])} чел.",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+
+        welcome_text = (
+            f"👋 Привет, {user.first_name}!\n\n"
+            f"🤝 Тебя пригласил друг!\n\n"
+            f"💰 Я помогу отслеживать твои расходы.\n\n"
+            f"Используй кнопки внизу экрана:"
+        )
+
+    await update.message.reply_text(
+        welcome_text,
         reply_markup=main_keyboard(),
     )
     return ConversationHandler.END
@@ -171,8 +230,10 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = load_data()
     user_data = get_user_data(data, user_id)
     expenses = user_data.get("expenses", [])
+    bonus = user_data.get("bonus", 0.0)
+    referrals = user_data.get("referrals", [])
 
-    if not expenses:
+    if not expenses and bonus == 0:
         await update.message.reply_text(
             "📊 Нет расходов. Нажми *💰 Внести сумму* чтобы добавить.",
             parse_mode="Markdown",
@@ -211,10 +272,44 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines.append("")
 
     lines.append("━━━━━━━━━━━━━━━━")
-    lines.append(f"💳 *Итого: {grand_total:,.2f} ₽*")
+    lines.append(f"💳 *Итого расходов: {grand_total:,.2f} ₽*")
     lines.append(f"📝 Записей: {len(expenses)}")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=main_keyboard())
+    if bonus > 0:
+        lines.append(f"\n🎁 *Бонусный баланс: {bonus:,.2f} ₽*")
+        lines.append(f"👥 Приглашено друзей: {len(referrals)}")
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
+
+
+async def invite(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    data = load_data()
+    user_data = get_user_data(data, user_id)
+    referrals = user_data.get("referrals", [])
+    bonus = user_data.get("bonus", 0.0)
+
+    ref_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
+
+    text = (
+        f"👥 *Пригласи друга!*\n\n"
+        f"Поделись ссылкой — когда друг запустит бота, "
+        f"тебе начислится *+{REFERRAL_BONUS:.0f} ₽* на бонусный счёт!\n\n"
+        f"🔗 Твоя ссылка:\n`{ref_link}`\n\n"
+        f"📊 *Твоя статистика:*\n"
+        f"👥 Приглашено друзей: {len(referrals)}\n"
+        f"🎁 Бонусный баланс: {bonus:,.2f} ₽"
+    )
+
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -222,9 +317,20 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = load_data()
     uid = str(user_id)
     if uid in data:
-        data[uid] = {"expenses": []}
+        bonus = data[uid].get("bonus", 0.0)
+        referrals = data[uid].get("referrals", [])
+        referred_by = data[uid].get("referred_by", None)
+        data[uid] = {
+            "expenses": [],
+            "bonus": bonus,
+            "referrals": referrals,
+            "referred_by": referred_by,
+        }
         save_data(data)
-    await update.message.reply_text("🗑️ Все данные удалены.", reply_markup=main_keyboard())
+    await update.message.reply_text(
+        "🗑️ Расходы удалены. Бонусы и рефералы сохранены.",
+        reply_markup=main_keyboard(),
+    )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -242,6 +348,9 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     elif text == "🗑️ Сбросить данные":
         await reset(update, context)
         return ConversationHandler.END
+    elif text == "👥 Пригласить друга":
+        await invite(update, context)
+        return ConversationHandler.END
     return ConversationHandler.END
 
 
@@ -254,7 +363,10 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
-            MessageHandler(filters.Regex("^(💰 Внести сумму|📊 Статистика|🗑️ Сбросить данные)$"), handle_menu),
+            MessageHandler(
+                filters.Regex("^(💰 Внести сумму|📊 Статистика|🗑️ Сбросить данные|👥 Пригласить друга)$"),
+                handle_menu
+            ),
         ],
         states={
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
@@ -267,6 +379,7 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("invite", invite))
 
     print("🤖 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
