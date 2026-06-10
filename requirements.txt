@@ -1,5 +1,5 @@
 python-telegram-bot==21.3
-psycopg2-binary==2.9.9
+asyncpg==0.30.0
 matplotlib==3.10.3
 apscheduler==3.10.4
 pillow==11.2.1
