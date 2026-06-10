@@ -47,9 +47,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TOKEN       = os.environ.get("TOKEN", "")
+TOKEN        = os.environ.get("TOKEN", "")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "financereciepe_bot")
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+# Railway выдаёт postgres://, psycopg2 требует postgresql://
+DATABASE_URL = os.environ.get("DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
 REFERRAL_BONUS = 100.0
 
 # ── Conversation states ────────────────────────────────────────────────────────
@@ -985,6 +986,12 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# ── Global error handler ──────────────────────────────────────────────────────
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Unhandled exception:", exc_info=context.error)
+
+
 # ── Application lifecycle ──────────────────────────────────────────────────────
 
 async def _post_init(app: Application):
@@ -1050,11 +1057,12 @@ def main():
         filters.Regex(r"^\d+[.,]?\d*\s+\S") & ~filters.COMMAND,
         quick_add,
     ))
-    app.add_handler(CommandHandler("reset",  reset))
-    app.add_handler(CommandHandler("invite", invite))
-    app.add_handler(CommandHandler("report", show_report))
-    app.add_handler(CommandHandler("export", export_csv))
+    app.add_handler(CommandHandler("reset",   reset))
+    app.add_handler(CommandHandler("invite",  invite))
+    app.add_handler(CommandHandler("report",  show_report))
+    app.add_handler(CommandHandler("export",  export_csv))
     app.add_handler(CommandHandler("history", show_history))
+    app.add_error_handler(error_handler)
 
     print("🤖 Finance Bot v5.0 запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
