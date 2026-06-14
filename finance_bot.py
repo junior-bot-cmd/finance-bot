@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Finance Bot v6.0 — expense tracker"""
+"""Finance Bot v6.1 — psycopg (v3) for Python 3.13 compatibility"""
 
 import os, io, csv, re, logging, asyncio
 from datetime import date, timedelta
 
-import psycopg2
-import psycopg2.extras
-from psycopg2.pool import ThreadedConnectionPool
+import psycopg
+from psycopg.rows import dict_row
 
 import matplotlib
 matplotlib.use("Agg")
@@ -17,29 +16,17 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
-    KeyboardButton,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
+    Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    filters,
-    ContextTypes,
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, filters, ContextTypes,
 )
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN        = os.environ.get("TOKEN", "")
@@ -47,7 +34,6 @@ BOT_USERNAME = os.environ.get("BOT_USERNAME", "financereciepe_bot")
 DATABASE_URL = os.environ.get("DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
 REFERRAL_BONUS = 100.0
 
-# Conversation states
 AMOUNT, CATEGORY, NOTE, BUD_CAT, BUD_AMT = range(5)
 
 CATS = [
@@ -57,61 +43,44 @@ CATS = [
 ]
 
 KEYWORDS = {
-    "такси": "🚕 Такси",       "uber": "🚕 Такси",
-    "убер": "🚕 Такси",        "яндекс": "🚕 Такси",
+    "такси": "🚕 Такси",        "uber": "🚕 Такси",
+    "убер": "🚕 Такси",         "яндекс": "🚕 Такси",
     "транспорт": "🚌 Транспорт", "метро": "🚌 Транспорт",
     "автобус": "🚌 Транспорт",  "маршрутка": "🚌 Транспорт",
     "трамвай": "🚌 Транспорт",
-    "еда": "🍔 Еда",           "кафе": "🍔 Еда",
-    "ресторан": "🍔 Еда",      "обед": "🍔 Еда",
-    "ужин": "🍔 Еда",          "завтрак": "🍔 Еда",
-    "кофе": "🍔 Еда",          "перекус": "🍔 Еда",
-    "одежда": "👗 Одежда",     "обувь": "👗 Одежда",
+    "еда": "🍔 Еда",            "кафе": "🍔 Еда",
+    "ресторан": "🍔 Еда",       "обед": "🍔 Еда",
+    "ужин": "🍔 Еда",           "завтрак": "🍔 Еда",
+    "кофе": "🍔 Еда",           "перекус": "🍔 Еда",
+    "одежда": "👗 Одежда",      "обувь": "👗 Одежда",
     "жкх": "🏠 Жильё и ЖКХ",  "аренда": "🏠 Жильё и ЖКХ",
     "коммуналка": "🏠 Жильё и ЖКХ", "квартира": "🏠 Жильё и ЖКХ",
-    "аптека": "💊 Здоровье",   "врач": "💊 Здоровье",
+    "аптека": "💊 Здоровье",    "врач": "💊 Здоровье",
     "лекарство": "💊 Здоровье", "больница": "💊 Здоровье",
-    "кино": "🎬 Развлечения",  "театр": "🎬 Развлечения",
+    "кино": "🎬 Развлечения",   "театр": "🎬 Развлечения",
     "концерт": "🎬 Развлечения",
-    "связь": "📱 Связь",       "интернет": "📱 Связь",
+    "связь": "📱 Связь",        "интернет": "📱 Связь",
     "телефон": "📱 Связь",
-    "продукты": "🛒 Продукты", "магазин": "🛒 Продукты",
+    "продукты": "🛒 Продукты",  "магазин": "🛒 Продукты",
     "пятёрочка": "🛒 Продукты", "пятерочка": "🛒 Продукты",
-    "магнит": "🛒 Продукты",   "ашан": "🛒 Продукты",
-    "лента": "🛒 Продукты",    "вкусвилл": "🛒 Продукты",
+    "магнит": "🛒 Продукты",    "ашан": "🛒 Продукты",
+    "лента": "🛒 Продукты",     "вкусвилл": "🛒 Продукты",
 }
 
 WEEKDAYS = ["Воскресенье", "Понедельник", "Вторник", "Среда",
             "Четверг", "Пятница", "Суббота"]
 
-# ── Database ───────────────────────────────────────────────────────────────────
-
-_pool: ThreadedConnectionPool = None
-
-
-def _get_pool() -> ThreadedConnectionPool:
-    global _pool
-    if _pool is None:
-        _pool = ThreadedConnectionPool(1, 10, DATABASE_URL)
-    return _pool
-
+# ── Database (psycopg v3) ──────────────────────────────────────────────────────
 
 def _execute(query: str, params: tuple = (), fetch: str = None):
-    pool = _get_pool()
-    conn = pool.getconn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True) as conn:
+        with conn.cursor() as cur:
             cur.execute(query, params)
-            conn.commit()
             if fetch == "one":
                 return cur.fetchone()
             if fetch == "all":
                 return cur.fetchall()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        pool.putconn(conn)
+    return None
 
 
 async def db(query: str, params: tuple = (), fetch: str = None):
@@ -119,58 +88,53 @@ async def db(query: str, params: tuple = (), fetch: str = None):
 
 
 def setup_db():
-    """Create tables. Called once at startup."""
-    conn = psycopg2.connect(DATABASE_URL)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id     BIGINT PRIMARY KEY,
-            username    TEXT,
-            first_name  TEXT,
-            referred_by BIGINT,
-            bonus       REAL DEFAULT 0,
-            created_at  TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS expenses (
-            id           SERIAL PRIMARY KEY,
-            user_id      BIGINT NOT NULL,
-            amount       REAL NOT NULL,
-            category     TEXT NOT NULL,
-            note         TEXT,
-            expense_date DATE NOT NULL DEFAULT CURRENT_DATE,
-            created_at   TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    cur.execute(
-        "CREATE INDEX IF NOT EXISTS idx_exp ON expenses(user_id, expense_date)"
-    )
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS budgets (
-            user_id       BIGINT NOT NULL,
-            category      TEXT NOT NULL,
-            monthly_limit REAL NOT NULL,
-            PRIMARY KEY (user_id, category)
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS referrals (
-            referrer_id BIGINT NOT NULL,
-            referred_id BIGINT NOT NULL,
-            PRIMARY KEY (referrer_id, referred_id)
-        )
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
+    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id     BIGINT PRIMARY KEY,
+                    username    TEXT,
+                    first_name  TEXT,
+                    referred_by BIGINT,
+                    bonus       REAL DEFAULT 0,
+                    created_at  TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS expenses (
+                    id           SERIAL PRIMARY KEY,
+                    user_id      BIGINT NOT NULL,
+                    amount       REAL NOT NULL,
+                    category     TEXT NOT NULL,
+                    note         TEXT,
+                    expense_date DATE NOT NULL DEFAULT CURRENT_DATE,
+                    created_at   TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exp ON expenses(user_id, expense_date)"
+            )
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS budgets (
+                    user_id       BIGINT NOT NULL,
+                    category      TEXT NOT NULL,
+                    monthly_limit REAL NOT NULL,
+                    PRIMARY KEY (user_id, category)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS referrals (
+                    referrer_id BIGINT NOT NULL,
+                    referred_id BIGINT NOT NULL,
+                    PRIMARY KEY (referrer_id, referred_id)
+                )
+            """)
     logger.info("Database ready.")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _label(cat: str) -> str:
-    """Strip emoji prefix from category name."""
     parts = cat.split(" ", 1)
     return parts[1] if len(parts) > 1 else cat
 
@@ -192,8 +156,7 @@ async def _upsert_user(user):
         """INSERT INTO users (user_id, username, first_name)
            VALUES (%s, %s, %s)
            ON CONFLICT (user_id) DO UPDATE
-           SET username = EXCLUDED.username,
-               first_name = EXCLUDED.first_name""",
+           SET username=EXCLUDED.username, first_name=EXCLUDED.first_name""",
         (user.id, user.username, user.first_name),
     )
 
@@ -206,12 +169,12 @@ async def _budget_alert(user_id: int, category: str) -> str:
     if not row:
         return ""
     limit = row["monthly_limit"]
-    spent_row = await db(
-        "SELECT COALESCE(SUM(amount), 0) AS s FROM expenses "
+    sp = await db(
+        "SELECT COALESCE(SUM(amount),0) AS s FROM expenses "
         "WHERE user_id=%s AND category=%s AND expense_date >= %s",
         (user_id, category, date.today().replace(day=1)), fetch="one",
     )
-    spent = spent_row["s"] if spent_row else 0
+    spent = sp["s"] if sp else 0
     pct = spent / limit * 100 if limit else 0
     if pct >= 100:
         return f"\n\n🔴 Лимит «{_label(category)}» *превышён!* ({spent:,.0f}/{limit:,.0f} ₽)"
@@ -225,15 +188,15 @@ async def _budget_alert(user_id: int, category: str) -> str:
 def kb_main():
     return ReplyKeyboardMarkup([
         [KeyboardButton("💸 Добавить расход")],
-        [KeyboardButton("📊 Статистика"),     KeyboardButton("📈 Отчёт")],
-        [KeyboardButton("💳 История"),        KeyboardButton("🎯 Лимиты")],
-        [KeyboardButton("📤 Экспорт CSV"),    KeyboardButton("👥 Пригласить")],
+        [KeyboardButton("📊 Статистика"),  KeyboardButton("📈 Отчёт")],
+        [KeyboardButton("💳 История"),     KeyboardButton("🎯 Лимиты")],
+        [KeyboardButton("📤 Экспорт CSV"), KeyboardButton("👥 Пригласить")],
     ], resize_keyboard=True)
 
 
-def kb_cats(one_time=True):
+def kb_cats():
     rows = [CATS[i:i+2] for i in range(0, len(CATS), 2)]
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=one_time)
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
 
 
 def kb_period():
@@ -255,8 +218,7 @@ def _make_pie(totals: dict, title: str) -> io.BytesIO:
     ax.pie(values, labels=labels, autopct="%1.0f%%", startangle=90, pctdistance=0.8)
     ax.set_title(title, fontsize=12, fontweight="bold")
     legend = [f"{labels[i]}: {values[i]:,.0f} ₽" for i in range(len(labels))]
-    ax.legend(legend, loc="lower center", bbox_to_anchor=(0.5, -0.2),
-              ncol=2, fontsize=7)
+    ax.legend(legend, loc="lower center", bbox_to_anchor=(0.5, -0.2), ncol=2, fontsize=7)
     plt.tight_layout()
     buf = io.BytesIO()
     plt.savefig(buf, format="PNG", dpi=130, bbox_inches="tight")
@@ -291,30 +253,23 @@ def _make_bar(daily: dict, title: str) -> io.BytesIO:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await _upsert_user(user)
-
-    # Handle referral
     extra = ""
     if context.args:
         try:
             ref_id = int(context.args[0])
         except ValueError:
             ref_id = None
-
         if ref_id and ref_id != user.id:
-            me = await db("SELECT referred_by FROM users WHERE user_id=%s",
-                          (user.id,), fetch="one")
+            me = await db("SELECT referred_by FROM users WHERE user_id=%s", (user.id,), fetch="one")
             if me and me["referred_by"] is None:
-                await db("UPDATE users SET referred_by=%s WHERE user_id=%s",
-                         (ref_id, user.id))
+                await db("UPDATE users SET referred_by=%s WHERE user_id=%s", (ref_id, user.id))
                 dup = await db(
                     "SELECT 1 FROM referrals WHERE referrer_id=%s AND referred_id=%s",
                     (ref_id, user.id), fetch="one",
                 )
                 if not dup:
-                    await db("INSERT INTO referrals(referrer_id, referred_id) VALUES(%s,%s)",
-                             (ref_id, user.id))
-                    await db("UPDATE users SET bonus=bonus+%s WHERE user_id=%s",
-                             (REFERRAL_BONUS, ref_id))
+                    await db("INSERT INTO referrals(referrer_id,referred_id) VALUES(%s,%s)", (ref_id, user.id))
+                    await db("UPDATE users SET bonus=bonus+%s WHERE user_id=%s", (REFERRAL_BONUS, ref_id))
                     try:
                         cnt = await db(
                             "SELECT COUNT(*) AS c FROM referrals WHERE referrer_id=%s",
@@ -323,26 +278,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await context.bot.send_message(
                             chat_id=ref_id,
                             text=f"🎉 Новый пользователь по твоей ссылке!\n"
-                                 f"*+{REFERRAL_BONUS:.0f} ₽* бонусов начислено.\n"
-                                 f"Всего приглашено: {cnt['c']} чел.",
+                                 f"*+{REFERRAL_BONUS:.0f} ₽* бонусов. Всего: {cnt['c']} чел.",
                             parse_mode="Markdown",
                         )
                     except Exception:
                         pass
                     extra = "\n\n🤝 Тебя пригласил друг!"
-
     await update.message.reply_text(
         f"👋 Привет, {user.first_name}!{extra}\n\n"
-        "💸 Я помогу разобраться, *на что уходят деньги*.\n\n"
-        "⚡ *Быстрый ввод* — просто напиши:\n"
-        "`500 такси` или `1200 продукты`\n\n"
+        "💸 Помогу понять, *на что уходят деньги*.\n\n"
+        "⚡ *Быстрый ввод:* `500 такси` или `1200 продукты`\n\n"
         "Или используй кнопки:",
-        parse_mode="Markdown",
-        reply_markup=kb_main(),
+        parse_mode="Markdown", reply_markup=kb_main(),
     )
 
 
-# ── Add expense (dialog) ───────────────────────────────────────────────────────
+# ── Expense dialog ─────────────────────────────────────────────────────────────
 
 async def dlg_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("💸 Введи сумму:", reply_markup=ReplyKeyboardRemove())
@@ -388,14 +339,12 @@ async def dlg_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _write_expense(update, context, note=note)
 
 
-async def _write_expense(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                          note: str, amount: float = None, category: str = None):
+async def _write_expense(update, context, note, amount=None, category=None):
     uid = update.effective_user.id
     amt = amount   if amount   is not None else context.user_data.get("amt", 0)
     cat = category if category is not None else context.user_data.get("cat", "")
     await db(
-        "INSERT INTO expenses(user_id, amount, category, note, expense_date) "
-        "VALUES(%s,%s,%s,%s,%s)",
+        "INSERT INTO expenses(user_id,amount,category,note,expense_date) VALUES(%s,%s,%s,%s,%s)",
         (uid, amt, cat, note, date.today()),
     )
     alert = await _budget_alert(uid, cat)
@@ -422,10 +371,9 @@ async def quick_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         return
 
-    kw   = m.group(2).strip().lower()
-    cat  = None
+    kw  = m.group(2).strip().lower()
+    cat = None
     tail = ""
-
     for key, val in KEYWORDS.items():
         if kw.startswith(key):
             cat  = val
@@ -433,9 +381,8 @@ async def quick_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
         if key in kw:
             cat  = val
-            tail = kw.replace(key, "").strip()
+            tail = kw.replace(key, "", 1).strip()
             break
-
     if cat is None:
         cat  = "📦 Другое"
         tail = m.group(2).strip()
@@ -446,6 +393,12 @@ async def quick_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Statistics ─────────────────────────────────────────────────────────────────
 
+_PERIOD_NAMES = {
+    "month": "текущий месяц", "prev": "прошлый месяц",
+    "week":  "7 дней",        "all":  "всё время",
+}
+
+
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📊 *Статистика* — выбери период:",
@@ -453,17 +406,12 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-_PERIOD_NAMES = {"month": "текущий месяц", "prev": "прошлый месяц",
-                 "week": "7 дней", "all": "всё время"}
-
-
 async def cb_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    key  = q.data[2:]          # strip "p_"
+    key  = q.data[2:]
     uid  = q.from_user.id
     s, e = _period(key)
-
     rows = await db(
         "SELECT category, SUM(amount) AS t FROM expenses "
         "WHERE user_id=%s AND expense_date BETWEEN %s AND %s "
@@ -472,7 +420,6 @@ async def cb_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     total = sum(r["t"] for r in rows) if rows else 0
     label = _PERIOD_NAMES.get(key, key)
-
     lines = [f"📊 *Статистика за {label}:*\n"]
     if not rows:
         lines.append("Расходов нет.")
@@ -482,17 +429,15 @@ async def cb_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bar = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
             lines.append(f"{r['category']}\n`{bar}` {pct:.1f}%\n{r['t']:,.0f} ₽\n")
         lines += ["━━━━━━━━━━━━", f"💸 *Итого: {total:,.0f} ₽*"]
-
     await q.edit_message_text("\n".join(lines), parse_mode="Markdown")
 
 
-# ── Report with charts ─────────────────────────────────────────────────────────
+# ── Report ─────────────────────────────────────────────────────────────────────
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
     s    = date.today().replace(day=1)
     name = date.today().strftime("%B %Y")
-
     await update.message.reply_text("📈 Готовлю отчёт…", reply_markup=kb_main())
 
     by_cat = await db(
@@ -506,8 +451,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     daily = await db(
         "SELECT expense_date, SUM(amount) AS t FROM expenses "
-        "WHERE user_id=%s AND expense_date >= %s "
-        "GROUP BY expense_date ORDER BY expense_date",
+        "WHERE user_id=%s AND expense_date >= %s GROUP BY expense_date ORDER BY expense_date",
         (uid, s), fetch="all",
     )
     avg_row = await db(
@@ -532,7 +476,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     totals   = {r["category"]: r["t"] for r in by_cat}
     grand    = sum(totals.values())
     avg_day  = avg_row["a"] if avg_row and avg_row["a"] else 0
-    top_wd   = WEEKDAYS[wd_row["wd"]] if wd_row else "—"
+    top_wd   = WEEKDAYS[int(wd_row["wd"])] if wd_row else "—"
     lm_total = lm_row["t"] if lm_row else 0
 
     lines = [f"📈 *Отчёт за {name}*\n"]
@@ -543,14 +487,11 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(f"📆 Самый затратный день: *{top_wd}*")
     if lm_total:
         d = grand - lm_total
-        arrow = "📈" if d > 0 else "📉"
-        lines.append(f"{arrow} vs прошлый месяц: {'+' if d>=0 else ''}{d:,.0f} ₽")
+        lines.append(f"{'📈' if d>0 else '📉'} vs прошлый месяц: {'+' if d>=0 else ''}{d:,.0f} ₽")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
     pie = await asyncio.to_thread(_make_pie, totals, f"Расходы — {name}")
     await update.message.reply_photo(pie, caption="🍕 По категориям")
-
     daily_dict = {r["expense_date"]: r["t"] for r in daily}
     if daily_dict:
         bar = await asyncio.to_thread(_make_bar, daily_dict, f"По дням — {name}")
@@ -559,7 +500,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── History ────────────────────────────────────────────────────────────────────
 
-def _history_content(rows: list):
+def _history_msg(rows):
     lines   = ["💳 *Последние 10 расходов:*\n"]
     buttons = []
     for r in rows:
@@ -576,14 +517,14 @@ def _history_content(rows: list):
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
     rows = await db(
-        "SELECT id, expense_date, category, amount, note FROM expenses "
+        "SELECT id,expense_date,category,amount,note FROM expenses "
         "WHERE user_id=%s ORDER BY expense_date DESC, id DESC LIMIT 10",
         (uid,), fetch="all",
     )
     if not rows:
         await update.message.reply_text("💳 История пуста.", reply_markup=kb_main())
         return
-    text, markup = _history_content(rows)
+    text, markup = _history_msg(rows)
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
 
 
@@ -592,24 +533,20 @@ async def cb_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     uid = q.from_user.id
     eid = int(q.data.split("_")[1])
-
-    row = await db("SELECT id FROM expenses WHERE id=%s AND user_id=%s",
-                   (eid, uid), fetch="one")
+    row = await db("SELECT id FROM expenses WHERE id=%s AND user_id=%s", (eid, uid), fetch="one")
     if not row:
         await q.answer("Запись не найдена.", show_alert=True)
         return
-
     await db("DELETE FROM expenses WHERE id=%s", (eid,))
-
     rows = await db(
-        "SELECT id, expense_date, category, amount, note FROM expenses "
+        "SELECT id,expense_date,category,amount,note FROM expenses "
         "WHERE user_id=%s ORDER BY expense_date DESC, id DESC LIMIT 10",
         (uid,), fetch="all",
     )
     if not rows:
         await q.edit_message_text("💳 История пуста.")
         return
-    text, markup = _history_content(rows)
+    text, markup = _history_msg(rows)
     await q.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
 
 
@@ -618,17 +555,14 @@ async def cb_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def dlg_bud_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
     s    = date.today().replace(day=1)
-    rows = await db("SELECT category, monthly_limit FROM budgets WHERE user_id=%s",
-                    (uid,), fetch="all")
-
+    rows = await db("SELECT category,monthly_limit FROM budgets WHERE user_id=%s", (uid,), fetch="all")
     lines = ["🎯 *Мои лимиты:*\n"]
     if not rows:
         lines.append("Лимиты не установлены.\n")
     else:
         for b in rows:
-            cat   = b["category"]
-            limit = b["monthly_limit"]
-            sp    = await db(
+            cat, limit = b["category"], b["monthly_limit"]
+            sp = await db(
                 "SELECT COALESCE(SUM(amount),0) AS s FROM expenses "
                 "WHERE user_id=%s AND category=%s AND expense_date >= %s",
                 (uid, cat, s), fetch="one",
@@ -643,11 +577,8 @@ async def dlg_bud_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 bar, icon = "🟩"*filled + "⬜"*(10-filled), "🟢"
             lines.append(f"{icon} {cat}\n{bar} {pct:.0f}%\n{spent:,.0f}/{limit:,.0f} ₽\n")
-
     lines.append("Выбери категорию для лимита:")
-    await update.message.reply_text(
-        "\n".join(lines), parse_mode="Markdown", reply_markup=kb_cats(),
-    )
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb_cats())
     return BUD_CAT
 
 
@@ -679,12 +610,12 @@ async def dlg_bud_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     cat = context.user_data.get("bud_cat", "")
     await db(
-        "INSERT INTO budgets(user_id, category, monthly_limit) VALUES(%s,%s,%s) "
-        "ON CONFLICT(user_id, category) DO UPDATE SET monthly_limit=EXCLUDED.monthly_limit",
+        "INSERT INTO budgets(user_id,category,monthly_limit) VALUES(%s,%s,%s) "
+        "ON CONFLICT(user_id,category) DO UPDATE SET monthly_limit=EXCLUDED.monthly_limit",
         (uid, cat, amt),
     )
     await update.message.reply_text(
-        f"✅ Лимит установлен!\n{cat}: *{amt:,.0f} ₽/месяц*",
+        f"✅ {cat}: *{amt:,.0f} ₽/месяц*",
         parse_mode="Markdown", reply_markup=kb_main(),
     )
     return ConversationHandler.END
@@ -695,18 +626,18 @@ async def dlg_bud_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
     rows = await db(
-        "SELECT expense_date, category, note, amount FROM expenses "
+        "SELECT expense_date,category,note,amount FROM expenses "
         "WHERE user_id=%s ORDER BY expense_date DESC",
         (uid,), fetch="all",
     )
     if not rows:
         await update.message.reply_text("Нет данных.", reply_markup=kb_main())
         return
-    buf    = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["Дата", "Категория", "Описание", "Сумма"])
+    buf = io.StringIO()
+    w   = csv.writer(buf)
+    w.writerow(["Дата", "Категория", "Описание", "Сумма"])
     for r in rows:
-        writer.writerow([r["expense_date"], r["category"], r["note"] or "", f"{r['amount']:.2f}"])
+        w.writerow([r["expense_date"], r["category"], r["note"] or "", f"{r['amount']:.2f}"])
     await update.message.reply_document(
         document=buf.getvalue().encode("utf-8-sig"),
         filename=f"expenses_{date.today()}.csv",
@@ -718,16 +649,14 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    cnt = await db("SELECT COUNT(*) AS c FROM referrals WHERE referrer_id=%s",
-                   (uid,), fetch="one")
+    cnt = await db("SELECT COUNT(*) AS c FROM referrals WHERE referrer_id=%s", (uid,), fetch="one")
     usr = await db("SELECT bonus FROM users WHERE user_id=%s", (uid,), fetch="one")
     link = f"https://t.me/{BOT_USERNAME}?start={uid}"
     await update.message.reply_text(
         f"👥 *Пригласи друга!*\n\n"
-        f"За каждого друга — *+{REFERRAL_BONUS:.0f} ₽* бонусов!\n\n"
-        f"🔗 Ссылка:\n`{link}`\n\n"
-        f"Приглашено: {cnt['c']} чел.\n"
-        f"Бонусы: *{usr['bonus']:,.0f} ₽*",
+        f"За каждого — *+{REFERRAL_BONUS:.0f} ₽* бонусов!\n\n"
+        f"🔗 `{link}`\n\n"
+        f"Приглашено: {cnt['c']} чел. · Бонусы: *{usr['bonus'] or 0:,.0f} ₽*",
         parse_mode="Markdown", reply_markup=kb_main(),
     )
 
@@ -735,8 +664,7 @@ async def cmd_invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Reset ──────────────────────────────────────────────────────────────────────
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    await db("DELETE FROM expenses WHERE user_id=%s", (uid,))
+    await db("DELETE FROM expenses WHERE user_id=%s", (update.effective_user.id,))
     await update.message.reply_text("🗑 Все расходы удалены.", reply_markup=kb_main())
 
 
@@ -749,9 +677,9 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _monthly(app: Application):
     today = date.today()
-    e     = today.replace(day=1) - timedelta(days=1)
-    s     = e.replace(day=1)
-    name  = s.strftime("%B %Y")
+    e = today.replace(day=1) - timedelta(days=1)
+    s = e.replace(day=1)
+    name = s.strftime("%B %Y")
     users = await db("SELECT user_id, first_name FROM users", fetch="all")
     for u in users or []:
         uid  = u["user_id"]
@@ -773,13 +701,13 @@ async def _monthly(app: Application):
             pie = await asyncio.to_thread(_make_pie, totals, f"Расходы — {name}")
             await app.bot.send_photo(uid, pie)
             await asyncio.sleep(0.05)
-        except Exception as exc:
-            logger.error("Monthly report for %s: %s", uid, exc)
+        except Exception as e:
+            logger.error("monthly report %s: %s", uid, e)
 
 
 async def _weekly(app: Application):
     today = date.today()
-    s     = today - timedelta(days=6)
+    s = today - timedelta(days=6)
     users = await db("SELECT user_id, first_name FROM users", fetch="all")
     for u in users or []:
         uid  = u["user_id"]
@@ -792,18 +720,16 @@ async def _weekly(app: Application):
         if not rows:
             continue
         grand = sum(r["t"] for r in rows)
-        lines = [
-            f"📋 *Дайджест* ({s.strftime('%d.%m')}–{today.strftime('%d.%m')})\n"
-            f"Привет, {u['first_name'] or 'друг'}!\n"
-        ]
+        lines = [f"📋 *Дайджест* ({s.strftime('%d.%m')}–{today.strftime('%d.%m')})\n"
+                 f"Привет, {u['first_name'] or 'друг'}!\n"]
         for r in rows[:5]:
             lines.append(f"{r['category']}: *{r['t']:,.0f} ₽*")
-        lines.append(f"\n💸 *{grand:,.0f} ₽* за неделю · avg *{grand/7:,.0f} ₽*/день")
+        lines.append(f"\n💸 *{grand:,.0f} ₽* · avg *{grand/7:,.0f} ₽*/день")
         try:
             await app.bot.send_message(uid, "\n".join(lines), parse_mode="Markdown")
             await asyncio.sleep(0.05)
-        except Exception as exc:
-            logger.error("Weekly digest for %s: %s", uid, exc)
+        except Exception as e:
+            logger.error("weekly digest %s: %s", uid, e)
 
 
 # ── Error handler ──────────────────────────────────────────────────────────────
@@ -830,11 +756,10 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_start(app: Application):
     sched = AsyncIOScheduler()
-    sched.add_job(_monthly, CronTrigger(day=1,            hour=9), args=[app])
+    sched.add_job(_monthly, CronTrigger(day=1,             hour=9), args=[app])
     sched.add_job(_weekly,  CronTrigger(day_of_week="mon", hour=9), args=[app])
     sched.start()
     app.bot_data["sched"] = sched
-    logger.info("Bot started.")
 
 
 async def on_stop(app: Application):
@@ -865,18 +790,17 @@ def main():
         r"^(💸 Добавить расход|📊 Статистика|📈 Отчёт|"
         r"💳 История|🎯 Лимиты|📤 Экспорт CSV|👥 Пригласить)$"
     )
-
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", cmd_start),
             MessageHandler(filters.Regex(MENU_RE), menu),
         ],
         states={
-            AMOUNT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, dlg_amount)],
-            CATEGORY:[MessageHandler(filters.TEXT & ~filters.COMMAND, dlg_category)],
-            NOTE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, dlg_note)],
-            BUD_CAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, dlg_bud_cat)],
-            BUD_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, dlg_bud_amt)],
+            AMOUNT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, dlg_amount)],
+            CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, dlg_category)],
+            NOTE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, dlg_note)],
+            BUD_CAT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, dlg_bud_cat)],
+            BUD_AMT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, dlg_bud_amt)],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
     )
@@ -885,8 +809,7 @@ def main():
     app.add_handler(CallbackQueryHandler(cb_stats,  pattern=r"^p_"))
     app.add_handler(CallbackQueryHandler(cb_delete, pattern=r"^del_\d+$"))
     app.add_handler(MessageHandler(
-        filters.Regex(r"^\d+[.,]?\d*\s+\S") & ~filters.COMMAND,
-        quick_add,
+        filters.Regex(r"^\d+[.,]?\d*\s+\S") & ~filters.COMMAND, quick_add,
     ))
     app.add_handler(CommandHandler("reset",   cmd_reset))
     app.add_handler(CommandHandler("report",  cmd_report))
@@ -894,7 +817,7 @@ def main():
     app.add_handler(CommandHandler("export",  cmd_export))
     app.add_error_handler(on_error)
 
-    logger.info("Finance Bot v6.0 starting...")
+    logger.info("Finance Bot v6.1 starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
