@@ -194,6 +194,7 @@ def kb_main():
         [KeyboardButton("📊 Статистика"),  KeyboardButton("📈 Отчёт")],
         [KeyboardButton("💳 История"),     KeyboardButton("🎯 Лимиты")],
         [KeyboardButton("📤 Экспорт CSV"), KeyboardButton("👥 Пригласить")],
+        [KeyboardButton("💰 Баланс")],
     ], resize_keyboard=True)
 
 
@@ -685,8 +686,26 @@ async def cmd_invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👥 *Пригласи друга!*\n\n"
         f"За каждого друга — *+{REFERRAL_BONUS:.0f} ₽* бонусов!\n\n"
         f"Твоя ссылка:\n`{link}`\n\n"
-        f"Приглашено: *{invited}* чел. · Бонусы: *{bonus:,.0f} ₽*",
+        f"Приглашено: *{invited}* чел. · Баланс: *{bonus:,.0f} ₽*",
         parse_mode="Markdown", reply_markup=kb,
+    )
+
+
+# ── Balance ────────────────────────────────────────────────────────────────────
+
+async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    await _upsert_user(update.effective_user)
+    usr = await db("SELECT bonus FROM users WHERE user_id=%s", (uid,), fetch="one")
+    cnt = await db("SELECT COUNT(*) AS c FROM referrals WHERE referrer_id=%s", (uid,), fetch="one")
+    bonus   = usr["bonus"] if usr and usr["bonus"] else 0
+    invited = cnt["c"] if cnt else 0
+    await update.message.reply_text(
+        f"💰 *Твой баланс: {bonus:,.0f} ₽*\n\n"
+        f"Пополняется за приглашённых друзей — *+{REFERRAL_BONUS:.0f} ₽* за каждого.\n"
+        f"Приглашено: *{invited}* чел.\n\n"
+        f"Нажми «👥 Пригласить», чтобы получить свою ссылку.",
+        parse_mode="Markdown", reply_markup=kb_main(),
     )
 
 
@@ -778,6 +797,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif txt == "🎯 Лимиты":         return await dlg_bud_start(update, context)
     elif txt == "📤 Экспорт CSV":    await cmd_export(update, context)
     elif txt == "👥 Пригласить":     await cmd_invite(update, context)
+    elif txt == "💰 Баланс":         await cmd_balance(update, context)
     return ConversationHandler.END
 
 
@@ -817,7 +837,7 @@ def main():
 
     MENU_RE = (
         r"^(💸 Добавить расход|📊 Статистика|📈 Отчёт|"
-        r"💳 История|🎯 Лимиты|📤 Экспорт CSV|👥 Пригласить)$"
+        r"💳 История|🎯 Лимиты|📤 Экспорт CSV|👥 Пригласить|💰 Баланс)$"
     )
     conv = ConversationHandler(
         entry_points=[
@@ -841,6 +861,7 @@ def main():
         filters.Regex(r"^\d+[.,]?\d*\s+\S") & ~filters.COMMAND, quick_add,
     ))
     app.add_handler(CommandHandler("reset",   cmd_reset))
+    app.add_handler(CommandHandler("balance", cmd_balance))
     app.add_handler(CommandHandler("report",  cmd_report))
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("export",  cmd_export))
