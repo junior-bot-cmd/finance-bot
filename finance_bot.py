@@ -279,22 +279,31 @@ def _make_pie(totals: dict, title: str) -> io.BytesIO:
 def _make_bar(daily: dict, title: str) -> io.BytesIO:
     days = sorted(daily.keys())
     vals = [daily[d] for d in days]
+    n    = len(days)
     mx   = max(vals) if vals else 1
+    avg  = sum(vals) / n if n else 0
 
     fig, ax = plt.subplots(figsize=(9, 4))
     fig.patch.set_facecolor(BG)
     ax.set_facecolor(BG)
 
     colors = ["#E8684A" if v == mx else "#5B8FF9" for v in vals]
-    bars = ax.bar(range(len(days)), vals, color=colors, width=0.64, zorder=3)
+    bars = ax.bar(range(n), vals, color=colors, width=0.6, zorder=3)
 
     for rect, v in zip(bars, vals):
         if v > 0:
-            ax.text(rect.get_x() + rect.get_width() / 2, v + mx * 0.02,
+            ax.text(rect.get_x() + rect.get_width() / 2, v + mx * 0.03,
                     f"{v:,.0f}", ha="center", va="bottom",
-                    fontsize=7.5, color=MUTED)
+                    fontsize=8, color=MUTED)
 
-    ax.set_xticks(range(len(days)))
+    # пунктирная линия среднего расхода в день
+    if n > 1 and avg > 0:
+        ax.axhline(avg, color="#B8C2CC", linewidth=1, linestyle=(0, (4, 3)), zorder=2)
+        ax.text(0.995, avg / (mx * 1.22) + 0.01, f"среднее {avg:,.0f} ₽",
+                transform=ax.transAxes, va="bottom", ha="right",
+                fontsize=8, color=MUTED)
+
+    ax.set_xticks(range(n))
     ax.set_xticklabels([d.strftime("%d.%m") for d in days],
                        fontsize=8.5, color=MUTED)
     ax.set_title(title, fontsize=15, fontweight="bold", color=INK, pad=14)
@@ -304,8 +313,13 @@ def _make_bar(daily: dict, title: str) -> io.BytesIO:
     ax.spines["bottom"].set_color("#DCE3EA")
     ax.tick_params(left=False, length=0)
     ax.set_yticks([])
-    ax.set_ylim(0, mx * 1.20)
-    ax.margins(x=0.01)
+    ax.set_ylim(0, mx * 1.22)
+
+    # узкие столбцы по центру, даже если дней мало (не растягиваем на всю ширину)
+    MIN_SLOTS = 12
+    center = (n - 1) / 2
+    half   = max(n, MIN_SLOTS) / 2 + 0.5
+    ax.set_xlim(center - half, center + half)
 
     plt.tight_layout()
     buf = io.BytesIO()
@@ -566,9 +580,9 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pie = await asyncio.to_thread(_make_pie, totals, f"Расходы — {name}")
     await update.message.reply_photo(pie, caption="🍕 По категориям")
     daily_dict = {r["expense_date"]: r["t"] for r in daily}
-    if daily_dict:
+    if len(daily_dict) >= 2:
         bar = await asyncio.to_thread(_make_bar, daily_dict, f"По дням — {name}")
-        await update.message.reply_photo(bar, caption="📊 По дням")
+        await update.message.reply_photo(bar, caption="📊 Расходы по дням")
 
 
 # ── History ────────────────────────────────────────────────────────────────────
