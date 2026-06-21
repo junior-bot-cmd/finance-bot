@@ -220,17 +220,57 @@ def kb_period():
 
 # ── Charts ─────────────────────────────────────────────────────────────────────
 
+PALETTE = [
+    "#5B8FF9", "#5AD8A6", "#F6BD16", "#FF9D4D", "#E8684A",
+    "#6DC8EC", "#9270CA", "#FF99C3", "#269A99", "#5D7092",
+]
+INK     = "#2C3E50"   # основной тёмный текст
+MUTED   = "#8C9BAB"   # приглушённый серый
+BG      = "#FBFCFE"   # почти белый фон
+
+
 def _make_pie(totals: dict, title: str) -> io.BytesIO:
-    labels = [_label(k) for k in totals]
-    values = list(totals.values())
-    fig, ax = plt.subplots(figsize=(7, 5))
-    ax.pie(values, labels=labels, autopct="%1.0f%%", startangle=90, pctdistance=0.8)
-    ax.set_title(title, fontsize=12, fontweight="bold")
-    legend = [f"{labels[i]}: {values[i]:,.0f} ₽" for i in range(len(labels))]
-    ax.legend(legend, loc="lower center", bbox_to_anchor=(0.5, -0.2), ncol=2, fontsize=7)
+    items  = sorted(totals.items(), key=lambda x: x[1], reverse=True)
+    labels = [_label(k) for k, _ in items]
+    values = [v for _, v in items]
+    total  = sum(values) or 1
+    colors = [PALETTE[i % len(PALETTE)] for i in range(len(values))]
+
+    fig, ax = plt.subplots(figsize=(7.5, 6.6), subplot_kw=dict(aspect="equal"))
+    fig.patch.set_facecolor(BG)
+
+    wedges, _t, autotexts = ax.pie(
+        values, colors=colors, startangle=90, counterclock=False,
+        autopct=lambda p: f"{p:.0f}%" if p >= 6 else "",
+        pctdistance=0.80,
+        wedgeprops=dict(width=0.40, edgecolor=BG, linewidth=2.5),
+    )
+    for at in autotexts:
+        at.set_color("white")
+        at.set_fontsize(10)
+        at.set_fontweight("bold")
+
+    ax.text(0, 0.10, f"{total:,.0f} ₽", ha="center", va="center",
+            fontsize=21, fontweight="bold", color=INK)
+    ax.text(0, -0.16, "всего за период", ha="center", va="center",
+            fontsize=10.5, color=MUTED)
+
+    ax.set_title(title, fontsize=15.5, fontweight="bold", color=INK, pad=16)
+
+    legend_labels = [
+        f"{labels[i]}   {values[i]:,.0f} ₽  ·  {values[i]/total*100:.0f}%"
+        for i in range(len(labels))
+    ]
+    ax.legend(
+        wedges, legend_labels, loc="upper center",
+        bbox_to_anchor=(0.5, -0.01), ncol=2, frameon=False,
+        fontsize=9.5, handlelength=1.1, handleheight=1.1,
+        columnspacing=1.6, labelspacing=0.7,
+    )
+
     plt.tight_layout()
     buf = io.BytesIO()
-    plt.savefig(buf, format="PNG", dpi=130, bbox_inches="tight")
+    plt.savefig(buf, format="PNG", dpi=200, bbox_inches="tight", facecolor=BG)
     buf.seek(0)
     plt.close(fig)
     return buf
@@ -239,19 +279,37 @@ def _make_pie(totals: dict, title: str) -> io.BytesIO:
 def _make_bar(daily: dict, title: str) -> io.BytesIO:
     days = sorted(daily.keys())
     vals = [daily[d] for d in days]
-    mx   = max(vals)
-    fig, ax = plt.subplots(figsize=(9, 3))
-    colors = ["#E74C3C" if v == mx else "#4A90D9" for v in vals]
-    ax.bar(range(len(days)), vals, color=colors, alpha=0.85)
+    mx   = max(vals) if vals else 1
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    fig.patch.set_facecolor(BG)
+    ax.set_facecolor(BG)
+
+    colors = ["#E8684A" if v == mx else "#5B8FF9" for v in vals]
+    bars = ax.bar(range(len(days)), vals, color=colors, width=0.64, zorder=3)
+
+    for rect, v in zip(bars, vals):
+        if v > 0:
+            ax.text(rect.get_x() + rect.get_width() / 2, v + mx * 0.02,
+                    f"{v:,.0f}", ha="center", va="bottom",
+                    fontsize=7.5, color=MUTED)
+
     ax.set_xticks(range(len(days)))
-    ax.set_xticklabels([d.strftime("%d") for d in days], fontsize=7)
-    ax.set_title(title, fontsize=12, fontweight="bold")
-    ax.set_ylabel("₽")
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-    ax.grid(axis="y", alpha=0.3)
+    ax.set_xticklabels([d.strftime("%d.%m") for d in days],
+                       fontsize=8.5, color=MUTED)
+    ax.set_title(title, fontsize=15, fontweight="bold", color=INK, pad=14)
+
+    for s in ("top", "right", "left"):
+        ax.spines[s].set_visible(False)
+    ax.spines["bottom"].set_color("#DCE3EA")
+    ax.tick_params(left=False, length=0)
+    ax.set_yticks([])
+    ax.set_ylim(0, mx * 1.20)
+    ax.margins(x=0.01)
+
     plt.tight_layout()
     buf = io.BytesIO()
-    plt.savefig(buf, format="PNG", dpi=130, bbox_inches="tight")
+    plt.savefig(buf, format="PNG", dpi=200, bbox_inches="tight", facecolor=BG)
     buf.seek(0)
     plt.close(fig)
     return buf
