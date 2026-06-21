@@ -24,6 +24,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, filters, ContextTypes,
 )
+from telegram.helpers import escape_markdown
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,7 @@ TOKEN        = os.environ.get("TOKEN", "")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "financereciepe_bot")
 DATABASE_URL = os.environ.get("DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
 REFERRAL_BONUS = 100.0
+WELCOME_BONUS  = 20.0
 
 AMOUNT, CATEGORY, NOTE, BUD_CAT, BUD_AMT = range(5)
 
@@ -350,7 +352,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 if not dup:
                     await db("INSERT INTO referrals(referrer_id,referred_id) VALUES(%s,%s)", (ref_id, user.id))
+                    # +100 ₽ пригласившему, +20 ₽ приглашённому
                     await db("UPDATE users SET bonus=bonus+%s WHERE user_id=%s", (REFERRAL_BONUS, ref_id))
+                    await db("UPDATE users SET bonus=bonus+%s WHERE user_id=%s", (WELCOME_BONUS, user.id))
+
+                    ref      = await db("SELECT first_name, username FROM users WHERE user_id=%s",
+                                        (ref_id,), fetch="one")
+                    raw_ref  = (ref and (ref["first_name"]
+                                or (f"@{ref['username']}" if ref["username"] else None))) or "друг"
+                    ref_name = escape_markdown(raw_ref, version=1)
+                    raw_new  = user.first_name or (f"@{user.username}" if user.username else "новый пользователь")
+                    new_name = escape_markdown(raw_new, version=1)
+
+                    # уведомление пригласившему
                     try:
                         cnt = await db(
                             "SELECT COUNT(*) AS c FROM referrals WHERE referrer_id=%s",
@@ -358,13 +372,17 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         await context.bot.send_message(
                             chat_id=ref_id,
-                            text=f"🎉 Новый пользователь по твоей ссылке!\n"
-                                 f"*+{REFERRAL_BONUS:.0f} ₽* бонусов. Всего: {cnt['c']} чел.",
+                            text=f"🎉 По твоей ссылке присоединился *{new_name}*!\n\n"
+                                 f"Тебе начислено *+{REFERRAL_BONUS:.0f} ₽*. "
+                                 f"Всего приглашено: *{cnt['c']}* чел.",
                             parse_mode="Markdown",
                         )
                     except Exception:
                         pass
-                    extra = "\n\n🤝 Тебя пригласил друг!"
+
+                    # текст приглашённому (попадёт в приветствие)
+                    extra = (f"\n\n🤝 Тебя пригласил *{ref_name}*.\n"
+                             f"🎁 Тебе начислены приветственные *+{WELCOME_BONUS:.0f} ₽*!")
     await update.message.reply_text(
         f"👋 Привет, {user.first_name}!{extra}\n\n"
         "💸 Помогу понять, *на что уходят деньги*.\n\n"
