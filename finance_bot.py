@@ -3,6 +3,7 @@
 
 import os, io, csv, re, logging, asyncio
 from datetime import date, timedelta
+from urllib.parse import quote
 
 import psycopg
 from psycopg.rows import dict_row
@@ -17,7 +18,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from telegram import (
     Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton,
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -666,15 +667,26 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    await _upsert_user(update.effective_user)
     cnt = await db("SELECT COUNT(*) AS c FROM referrals WHERE referrer_id=%s", (uid,), fetch="one")
     usr = await db("SELECT bonus FROM users WHERE user_id=%s", (uid,), fetch="one")
-    link = f"https://t.me/{BOT_USERNAME}?start={uid}"
+    invited = cnt["c"] if cnt else 0
+    bonus   = usr["bonus"] if usr and usr["bonus"] else 0
+
+    link       = f"https://t.me/{BOT_USERNAME}?start={uid}"
+    share_text = "Веду учёт расходов в этом боте — присоединяйся!"
+    share_url  = f"https://t.me/share/url?url={quote(link)}&text={quote(share_text)}"
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Скопировать ссылку", copy_text=CopyTextButton(text=link))],
+        [InlineKeyboardButton("📤 Поделиться с другом", url=share_url)],
+    ])
     await update.message.reply_text(
         f"👥 *Пригласи друга!*\n\n"
-        f"За каждого — *+{REFERRAL_BONUS:.0f} ₽* бонусов!\n\n"
-        f"🔗 `{link}`\n\n"
-        f"Приглашено: {cnt['c']} чел. · Бонусы: *{usr['bonus'] or 0:,.0f} ₽*",
-        parse_mode="Markdown", reply_markup=kb_main(),
+        f"За каждого друга — *+{REFERRAL_BONUS:.0f} ₽* бонусов!\n\n"
+        f"Твоя ссылка:\n`{link}`\n\n"
+        f"Приглашено: *{invited}* чел. · Бонусы: *{bonus:,.0f} ₽*",
+        parse_mode="Markdown", reply_markup=kb,
     )
 
 
