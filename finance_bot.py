@@ -36,6 +36,8 @@ REFERRAL_BONUS = 100.0
 
 AMOUNT, CATEGORY, NOTE, BUD_CAT, BUD_AMT = range(5)
 
+BACK = "⬅️ Назад"
+
 CATS = [
     "🚌 Транспорт", "🚕 Такси", "🍔 Еда", "👗 Одежда",
     "🏠 Жильё и ЖКХ", "💊 Здоровье", "🎬 Развлечения",
@@ -196,7 +198,12 @@ def kb_main():
 
 def kb_cats():
     rows = [CATS[i:i+2] for i in range(0, len(CATS), 2)]
+    rows.append([BACK])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def kb_cancel():
+    return ReplyKeyboardMarkup([[BACK]], resize_keyboard=True)
 
 
 def kb_period():
@@ -296,11 +303,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Expense dialog ─────────────────────────────────────────────────────────────
 
 async def dlg_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("💸 Введи сумму:", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("💸 Введи сумму:", reply_markup=kb_cancel())
     return AMOUNT
 
 
 async def dlg_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text.strip() == BACK:
+        return await cmd_cancel(update, context)
     txt = update.message.text.strip().replace(",", ".")
     try:
         amt = float(txt)
@@ -318,6 +327,8 @@ async def dlg_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def dlg_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cat = update.message.text.strip()
+    if cat == BACK:
+        return await cmd_cancel(update, context)
     if cat not in CATS:
         await update.message.reply_text("❌ Выбери из списка:", reply_markup=kb_cats())
         return CATEGORY
@@ -325,7 +336,7 @@ async def dlg_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cat == "📦 Другое":
         await update.message.reply_text(
             "✏️ Напиши описание (например: *подарок*):",
-            parse_mode="Markdown", reply_markup=ReplyKeyboardRemove(),
+            parse_mode="Markdown", reply_markup=kb_cancel(),
         )
         return NOTE
     return await _write_expense(update, context, note=None)
@@ -333,6 +344,8 @@ async def dlg_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def dlg_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     note = update.message.text.strip()
+    if note == BACK:
+        return await cmd_cancel(update, context)
     if not note:
         await update.message.reply_text("❌ Напиши описание:")
         return NOTE
@@ -584,6 +597,8 @@ async def dlg_bud_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def dlg_bud_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cat = update.message.text.strip()
+    if cat == BACK:
+        return await cmd_cancel(update, context)
     if cat not in CATS:
         await update.message.reply_text("❌ Выбери из списка:", reply_markup=kb_cats())
         return BUD_CAT
@@ -594,12 +609,14 @@ async def dlg_bud_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = f"\nТекущий лимит: *{ex['monthly_limit']:,.0f} ₽*" if ex else ""
     await update.message.reply_text(
         f"{cat}{cur}\n\nВведи лимит (₽/месяц):",
-        parse_mode="Markdown", reply_markup=ReplyKeyboardRemove(),
+        parse_mode="Markdown", reply_markup=kb_cancel(),
     )
     return BUD_AMT
 
 
 async def dlg_bud_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text.strip() == BACK:
+        return await cmd_cancel(update, context)
     txt = update.message.text.strip().replace(",", ".")
     try:
         amt = float(txt)
@@ -669,7 +686,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Отменено.", reply_markup=kb_main())
+    await update.message.reply_text("🔙 Главное меню", reply_markup=kb_main())
     return ConversationHandler.END
 
 
