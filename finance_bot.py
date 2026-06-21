@@ -879,7 +879,16 @@ TIPS = [
 ]
 
 
-def _daily_message() -> str:
+# День месяца -> индекс совета в TIPS. Шаг 2–3 дня, не пересекается с
+# календарными датами (1, 25, последний день). 12 советов на месяц.
+TIP_SCHEDULE = {
+    3: 0,  5: 1,  8: 2,  10: 3, 12: 4, 14: 5,
+    17: 6, 19: 7, 21: 8, 23: 9, 27: 10, 29: 11,
+}
+
+
+def _daily_message():
+    """Текст рассылки на сегодня или None, если в этот день ничего не шлём."""
     today    = date.today()
     tomorrow = today + timedelta(days=1)
     if today.day == 1:
@@ -891,11 +900,15 @@ def _daily_message() -> str:
     if today.day == 25:
         return ("💰 *Близко к зарплате?*\n\nКонец месяца — хороший момент свериться: "
                 "сколько осталось до выплаты и хватает ли до неё. Глянь «📊 Статистику».")
-    return TIPS[today.timetuple().tm_yday % len(TIPS)]
+    if today.day in TIP_SCHEDULE:
+        return TIPS[TIP_SCHEDULE[today.day]]
+    return None
 
 
 async def _daily(app: Application):
-    text  = _daily_message()
+    text = _daily_message()
+    if not text:
+        return
     users = await db("SELECT user_id FROM users", fetch="all")
     for u in users or []:
         try:
