@@ -36,6 +36,7 @@ BOT_USERNAME = os.environ.get("BOT_USERNAME", "financereciepe_bot")
 DATABASE_URL = os.environ.get("DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
 REFERRAL_BONUS = 100.0
 WELCOME_BONUS  = 20.0
+ADMIN_ID       = int(os.environ.get("ADMIN_ID", "845969644"))
 
 AMOUNT, CATEGORY, NOTE, BUD_CAT, BUD_AMT = range(5)
 
@@ -799,6 +800,37 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── Stats (admin) ────────────────────────────────────────────────────────────
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return  # тихо игнорируем для всех, кроме владельца
+
+    total    = await db("SELECT COUNT(*) AS c FROM users", fetch="one")
+    active   = await db("SELECT COUNT(DISTINCT user_id) AS c FROM expenses", fetch="one")
+    refs     = await db("SELECT COUNT(*) AS c FROM referrals", fetch="one")
+    today    = await db(
+        "SELECT COUNT(*) AS c FROM users WHERE created_at >= CURRENT_DATE", fetch="one")
+    week     = await db(
+        "SELECT COUNT(*) AS c FROM users WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'",
+        fetch="one")
+    exp      = await db("SELECT COUNT(*) AS c FROM expenses", fetch="one")
+
+    def c(row):
+        return row["c"] if row else 0
+
+    await update.message.reply_text(
+        "📊 *Статистика бота*\n\n"
+        f"👥 Всего пользователей: *{c(total)}*\n"
+        f"✅ Активных (вносили траты): *{c(active)}*\n"
+        f"🆕 Новых за сегодня: *{c(today)}*\n"
+        f"📅 Новых за 7 дней: *{c(week)}*\n\n"
+        f"🤝 Рефералов приглашено: *{c(refs)}*\n"
+        f"💸 Всего записей о тратах: *{c(exp)}*",
+        parse_mode="Markdown",
+    )
+
+
 # ── Reset ──────────────────────────────────────────────────────────────────────
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1031,6 +1063,7 @@ def main():
     app.add_handler(MessageHandler(
         filters.Regex(r"^\d+[.,]?\d*\s+\S") & ~filters.COMMAND, quick_add,
     ))
+    app.add_handler(CommandHandler("stats",   cmd_stats))
     app.add_handler(CommandHandler("reset",   cmd_reset))
     app.add_handler(CommandHandler("balance", cmd_balance))
     app.add_handler(CommandHandler("report",  cmd_report))
